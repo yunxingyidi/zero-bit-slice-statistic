@@ -5,7 +5,7 @@ import time
 import torch as t
 
 
-__all__ = ['train', 'validate', 'PerformanceScoreboard']
+__all__ = ['validate', 'PerformanceScoreboard']
 
 
 
