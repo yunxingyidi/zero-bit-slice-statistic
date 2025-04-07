@@ -1,5 +1,7 @@
 import torch as t
 from .statistic import *
+conv_zero_slice = 0
+linear_zero_slice = 0
 
 class QuanConv2d(t.nn.Conv2d):
     def __init__(self, m: t.nn.Conv2d, quan_w_fn=None, quan_a_fn=None):
@@ -24,7 +26,7 @@ class QuanConv2d(t.nn.Conv2d):
         quantized_act = self.quan_a_fn(x)
         # print(quantized_weight.shape)
         # print(quantized_act.shape)
-        analyze_convolution(quantized_act, quantized_weight, self.stride, self.padding)
+        print(analyze_convolution(quantized_act, quantized_weight, self.stride, self.padding))
         return self._conv_forward(quantized_act, quantized_weight, bias=None)
 
 
@@ -44,6 +46,7 @@ class QuanLinear(t.nn.Linear):
     def forward(self, x):
         quantized_weight = self.quan_w_fn(self.weight)
         quantized_act = self.quan_a_fn(x)
+        print(analyse_linear(quantized_act, quantized_weight))
         return t.nn.functional.linear(quantized_act, quantized_weight, self.bias)
 
 

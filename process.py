@@ -37,8 +37,11 @@ def validate(data_loader, model, args):
 
     model.eval()
     # end_time = time.time()
+    idx = 0
     for batch_idx, (inputs, targets) in enumerate(data_loader):
         with t.no_grad():
+            idx = idx + 1
+            print(idx)
             inputs = inputs.to(args.device.type)
             # targets = targets.to(args.device.type)
 
