@@ -5,27 +5,27 @@ import torch as t
 import torch.utils.data
 import torchvision as tv
 from torch.utils.data import Dataset, DataLoader
-from sklearn.model_selection import train_test_split
+# from sklearn.model_selection import train_test_split
 from PIL import Image
 
 
-def __balance_val_split(dataset, val_split=0.):
-    targets = np.array(dataset.targets)
-    train_indices, val_indices = train_test_split(
-        np.arange(targets.shape[0]),
-        test_size=val_split,
-        stratify=targets
-    )
-    train_dataset = t.utils.data.Subset(dataset, indices=train_indices)
-    val_dataset = t.utils.data.Subset(dataset, indices=val_indices)
-    return train_dataset, val_dataset
-
-
-def __deterministic_worker_init_fn(worker_id, seed=0):
-    import random
-    random.seed(seed)
-    np.random.seed(seed)
-    t.manual_seed(seed)
+# def __balance_val_split(dataset, val_split=0.):
+#     targets = np.array(dataset.targets)
+#     train_indices, val_indices = train_test_split(
+#         np.arange(targets.shape[0]),
+#         test_size=val_split,
+#         stratify=targets
+#     )
+#     train_dataset = t.utils.data.Subset(dataset, indices=train_indices)
+#     val_dataset = t.utils.data.Subset(dataset, indices=val_indices)
+#     return train_dataset, val_dataset
+#
+#
+# def __deterministic_worker_init_fn(worker_id, seed=0):
+#     import random
+#     random.seed(seed)
+#     np.random.seed(seed)
+#     t.manual_seed(seed)
 
 def load_data(cfg):
     """ 仅加载用于推理的测试数据 """

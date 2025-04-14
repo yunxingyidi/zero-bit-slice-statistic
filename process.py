@@ -46,6 +46,10 @@ def validate(data_loader, model, args):
             # targets = targets.to(args.device.type)
 
             outputs = model(inputs)
+            with open('conv_8x8.txt', 'a') as f:
+                f.write('\n')
+            with open('linear_8x8.txt', 'a') as f:
+                f.write('\n')
             # loss = criterion(outputs, targets)
 
             # acc1, acc5 = accuracy(outputs.data, targets.data, topk=(1, 5))
