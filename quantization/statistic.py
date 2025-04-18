@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
 import pickle
+import math
 
 # def split_string_by_length(string, length):
 #     return [string[i:i+length] for i in range(0, len(string), length)]
@@ -217,12 +218,12 @@ def count_zero_multiply_tensor(w_zero_mask, a_zero_mask):
 
 
 def split_2bit_fields(tensor, total_bits=8):
-    """将张量拆分成2bit字段"""
+    """将张量拆分成2bit字段，低位在前"""
     fields = []
     for i in range(0, total_bits, 2):
         field = (tensor >> i) & 0b11  # 取出第 i~i+1 bit
         fields.append(field)
-    return torch.stack(fields[::-1], dim=-1)  # 逆序排列，最低位在后
+    return torch.stack(fields, dim=-1)
 
 
 def propagate_and_mask_zeros(bit_fields):
@@ -239,18 +240,28 @@ def propagate_and_mask_zeros(bit_fields):
     zero_mask = (out == 0)  # 返回零位的掩码
     return zero_mask
 
+def propagate_and_zeros(bit_fields):
+    out = bit_fields.clone()
+    c = torch.zeros_like(bit_fields[..., 0])
+    c_i2 = None
+    out[..., 0] = bit_fields[..., 0]
+    for i in range(0, 4):
+        if i < 3 and i > 0:
+            high = (out[..., i - 1] >> 1) & 0b1
+            c = c | high
+            next_value = bit_fields[..., i] + c
+            out[..., i] = next_value & 0b11
+            c = (next_value >> 2) & 0b1
+            if i == 2:
+                c_i2 = c | ((out[..., i] >> 1) & 0b1)
+        else:
+            out[..., i] = bit_fields[..., i]
+    out = torch.where(out < 2, out, out - 4)
+    return out, c_i2
+
+
 
 def tensor_statistic_multipy(weight_tensor, act_tensor):
-    """
-    执行对权重和激活的统计操作，返回包含 zero multiply 的掩码。
-
-    参数：
-    - weight_tensor: 输入的权重张量
-    - act_tensor: 输入的激活张量
-
-    返回：
-    - zero_mul_mask: 每次乘法是否满足 zero multiply 的掩码
-    """
     # 将权重和激活拆分成2bit字段
     w_fields = split_2bit_fields(weight_tensor)
     a_fields = split_2bit_fields(act_tensor)
@@ -260,10 +271,41 @@ def tensor_statistic_multipy(weight_tensor, act_tensor):
     a_zero_mask = propagate_and_mask_zeros(a_fields)
 
     # 统计乘法中是否存在 zero × zero 的乘法
-    # zero_mul_mask = (w_zero_mask & a_zero_mask).any(dim=-1)  # 每次卷积是否有零乘积
     zero_mul_mask = count_zero_multiply_tensor(w_zero_mask, a_zero_mask)
     return zero_mul_mask
 
+
+def simulate_2bit_matmul(w_fields, a_fields, w, a, w_carry, a_carry):
+    sample_out = torch.matmul(a.float(), w.float())  # shape: [B, O, L]
+    # 初始化结果张量，使用sample_out的形状（注意 transpose）
+    result = torch.zeros_like(sample_out, dtype=torch.int32)  # [B, O, L]
+    # [B, S, O, K], [B, S, K, L]
+    shift_pairs = [
+        (0, 0), (0, 1), (1, 0), (1, 1),
+        (0, 2), (0, 3), (1, 2), (1, 3),
+        (2, 0), (2, 1), (3, 0), (3, 1),
+        (2, 2), (2, 3), (3, 2), (3, 3),
+    ]
+
+    for i, j in shift_pairs:
+        # w_ij = w_fields[:, i, :, :]  # [B, O, K]
+        # a_ij = a_fields[:, j, :, :]  # [B, K, L]
+        w_ij = w_fields[i, ...]  # [B, O, K]
+        a_ij = a_fields[j, ...]  # [B, K, L]
+        p_ij = torch.matmul(a_ij.float(), w_ij.float())  # [B, O, L]
+        result += p_ij.to(torch.int32) << ((i + j) * 2)
+    # result = result.squeeze(0)  # [1, L]
+    # expand 以便做矩阵乘法
+    a_shifted = a.to(torch.int32) << 6  # [B, L, K]
+    w_shifted = w.to(torch.int32) << 6  # [B, O, K]
+
+    extra1 = torch.matmul(a_shifted.float(), w_carry.float()).to(torch.int32)  # [B, O, L]
+    extra2 = torch.matmul(a_carry.float(), w_shifted.float()).to(torch.int32)  # [B, O, L]
+
+    carry_and = (torch.matmul(a_carry.float(), w_carry.float()).to(torch.int32) << 12)  # [B, O, L]
+    result += extra1 + extra2 - carry_and
+
+    return result  # [B, O, L]
 
 # 示例：如何在卷积处理中使用
 def analyze_convolution(input_tensor, weight, stride=(1, 1), padding=(0, 0)):
@@ -320,17 +362,83 @@ def analyse_linear(input_tensor, weight, bias=None):
         f.write(str(ratio))
         f.write(',')
 
+def compute_convolution(input_tensor, weight, bias=None, stride=(1, 1), padding=(0, 0)):
+    N, C_in, H_in, W_in = input_tensor.shape
+    C_out, _, K_h, K_w = weight.shape
+    stride_h, stride_w = stride
+    pad_h, pad_w = padding
+
+    # 计算输出空间大小
+    H_out = (H_in + 2 * pad_h - K_h) // stride_h + 1
+    W_out = (W_in + 2 * pad_w - K_w) // stride_w + 1
+
+    # unfold 展开为 im2col 格式
+    input_unfold = F.unfold(input_tensor.float(), kernel_size=(K_h, K_w), stride=(stride_h, stride_w),
+                            padding=(pad_h, pad_w))  # [N, K, L]
+    input_unfold = input_unfold.transpose(1, 2)  # [N, L, K]
+
+    # 权重 reshape 并准备 bit-slice
+    weight_flat = weight.reshape(C_out, -1)  # [C_out, K]
+    weight_exp = weight_flat.unsqueeze(0).transpose(1, 2)  # [1, C_out, K]
+    weight_int = weight_exp.int() & 0xff  # 模拟 8bit 整数
+
+    weight_fields = split_2bit_fields(weight_int, total_bits=8)  # [1, C_out, K, 4]
+    weight_fields, w_carry = propagate_and_zeros(weight_fields)  # [1, C_out, K, 4], [1, C_out, K]
+
+    # 输入也进行 bit-slice 拆分
+    input_exp = input_unfold  # [N, L, 1, K]
+    input_int = input_exp.int() & 0xff
+    input_fields = split_2bit_fields(input_int, total_bits=8)  # [N, L, 1, K, 4]
+    input_fields, a_carry = propagate_and_zeros(input_fields)  # [...], [N, L, K]
+    output = torch.matmul(input_exp.float(), weight_exp.float())
+    weight_fields = weight_fields.permute(3, 0, 1, 2)  # [B, 4, O, K]
+    input_fields = input_fields.permute(3, 0, 1, 2)  # [B, 4, K, L]
+    # 模拟 bit-slice 的乘法
+    sim_result = simulate_2bit_matmul(
+        w_fields=weight_fields,  # [1, C_out, K, 4]
+        a_fields=input_fields,  # [N, 1, K, 4]
+        w=weight_exp.to(torch.int32),  # [1, C_out, K]
+        a=input_exp.to(torch.int32),  # [N, K]
+        w_carry=w_carry,  # [1, C_out, K]
+        a_carry=a_carry  # [N, K]
+    )  # → [N, C_out, K]
+
+    # 汇总乘法结果（按K维度求和）
+    output = sim_result  # [N, C_out]
+    # output shape 还原为 [N, C_out, H_out, W_out]
+    output = output.view(N, H_out * W_out, C_out).permute(0, 2, 1).contiguous()
+    output = output.view(N, C_out, H_out, W_out)
+
+    if bias is not None:
+        output += bias.view(1, -1, 1, 1)
+
+    return output
 
 
-    # print(f"符合 zero multiply 条件的乘法数：{total_zero_like_mul}")
-    # print(f"总乘法次数：{multiplications}")
+def compute_linear(input_tensor, weight, bias=None):
+    # Step 1: 拆分为2bit字段，返回 shape [B, C_in, 4]
+    input_q = input_tensor.int() & 0xFF
+    weight_q = weight.int() & 0xFF
 
-# weight_tensor = torch.tensor([[1, 2], [3, 0]])  # 权重张量
-# act_tensor = torch.tensor([[0, 3], [0, 0]])  # 激活张量
-#
-# # 调用tensor_statistic_multipy函数
-# zero_mul_mask = tensor_statistic_multipy(weight_tensor, act_tensor)
-#
-# # 输出结果
-# print("Zero Multiply Mask:")
-# print(zero_mul_mask)
+    input_fields = split_2bit_fields(input_q, total_bits=8)  # [B, C_in, 4]
+    weight_fields = split_2bit_fields(weight_q, total_bits=8)  # [C_out, C_in, 4]
+
+    # Step 2: 传播符号位（带carry），输出同样shape的signed字段
+    input_fields, a_carry = propagate_and_zeros(input_fields)  # [B, C_in, 4]
+    weight_fields, w_carry = propagate_and_zeros(weight_fields)  # [C_out, C_in, 4]
+
+    weight_fields = weight_fields.permute(2, 0, 1)  # [B, 4, O, K]
+    input_fields = input_fields.permute(2, 0, 1)  # [B, 4, K, L]
+
+    output = simulate_2bit_matmul(
+        w_fields=weight_fields,  # [1, C_in, C_out, 4]
+        a_fields=input_fields,  # [B, C_in, 4]
+        w=weight,
+        a=input_tensor,
+        w_carry=w_carry,
+        a_carry=a_carry
+    )  # [B, C_out]
+    if bias is not None:
+        output = output + bias.view(1, -1)
+
+    return output

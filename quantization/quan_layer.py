@@ -4,7 +4,7 @@ conv_zero_slice = 0
 linear_zero_slice = 0
 
 class QuanConv2d(t.nn.Conv2d):
-    def __init__(self, m: t.nn.Conv2d, quan_w_fn=None, quan_a_fn=None):
+    def __init__(self, m: t.nn.Conv2d, quan_w_fn=None,  quan_a_fn=None):
         assert type(m) == t.nn.Conv2d
         super().__init__(m.in_channels, m.out_channels, m.kernel_size,
                          stride=m.stride,
@@ -22,12 +22,17 @@ class QuanConv2d(t.nn.Conv2d):
             self.bias = t.nn.Parameter(m.bias.detach())
 
     def forward(self, x):
-        quantized_weight = self.quan_w_fn(self.weight)
-        quantized_act = self.quan_a_fn(x)
-        # print(quantized_weight.shape)
-        # print(quantized_act.shape)
-        analyze_convolution(quantized_act, quantized_weight, self.stride, self.padding)
-        return self._conv_forward(quantized_act, quantized_weight, bias=None)
+        quantized_weight, weight_scale = self.quan_w_fn(self.weight)
+        quantized_act, act_scale = self.quan_a_fn(x)
+        # output = self._conv_forward(quantized_act, quantized_weight, bias=None)
+        output = compute_convolution(quantized_act, quantized_weight, stride=self.stride, padding=self.padding)
+        scale = weight_scale.view(1, -1, 1, 1) * act_scale.view(-1, 1, 1, 1)  # shape: [B, C, 1, 1]
+        output_fp = output * scale
+        if self.bias is not None:
+            output_fp += self.bias.view(1, -1, 1, 1)
+        return output_fp
+        # analyze_convolution(quantized_act, quantized_weight, self.stride, self.padding)
+        # return self._conv_forward(quantized_act, quantized_weight, bias=None)
 
 
 class QuanLinear(t.nn.Linear):
@@ -44,10 +49,15 @@ class QuanLinear(t.nn.Linear):
             self.bias = t.nn.Parameter(m.bias.detach())
 
     def forward(self, x):
-        quantized_weight = self.quan_w_fn(self.weight)
-        quantized_act = self.quan_a_fn(x)
-        analyse_linear(quantized_act, quantized_weight)
-        return t.nn.functional.linear(quantized_act, quantized_weight, self.bias)
+        quantized_weight, weight_scale = self.quan_w_fn(self.weight)
+        quantized_act, act_scale = self.quan_a_fn(x)
+        # analyse_linear(quantized_act, quantized_weight)
+        # output = t.nn.functional.linear(quantized_act, quantized_weight, self.bias)  # [B, out_features]
+        output = compute_linear(quantized_act, quantized_weight.T, self.bias)
+        # print(output)
+        scale = act_scale.view(-1, 1) * weight_scale.view(1, -1)
+        output_fp = output * scale
+        return output_fp
 
 
 QuanModuleMapping = {

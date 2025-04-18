@@ -9,10 +9,14 @@ def grad_scale(x, scale):
     return (y - y_grad).detach() + y_grad
 
 
+# def round_pass(x):
+#     y = x.round()
+#     y_grad = x
+#     return (y - y_grad).detach() + y_grad
+
 def round_pass(x):
-    y = x.round()
-    y_grad = x
-    return (y - y_grad).detach() + y_grad
+    return (x - x.detach()) + x.detach().round()
+
 
 
 class LsqQuan(Quantizer):
@@ -45,6 +49,7 @@ class LsqQuan(Quantizer):
             self.s = t.nn.Parameter(x.detach().abs().mean() * 2 / (self.thd_pos ** 0.5))
 
     def forward(self, x):
+        self.init_from(x)
         if self.per_channel:
             s_grad_scale = 1.0 / ((self.thd_pos * x.numel()) ** 0.5)
         else:
@@ -55,4 +60,4 @@ class LsqQuan(Quantizer):
         x = t.clamp(x, self.thd_neg, self.thd_pos)
         x = round_pass(x)
         # x = x * s_scale
-        return x
+        return x, s_scale

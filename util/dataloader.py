@@ -29,32 +29,51 @@ from PIL import Image
 
 def load_data(cfg):
     """ 仅加载用于推理的测试数据 """
-    tv_normalize = tv.transforms.Normalize(mean=[0.485, 0.456, 0.406],
+    # tv_normalize = tv.transforms.Normalize(mean=[0.485, 0.456, 0.406],
+    #                                        std=[0.229, 0.224, 0.225])
+    normalizer = tv.transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                            std=[0.229, 0.224, 0.225])
-
-    if cfg.dataset == 'imagenet':
-        test_transform = tv.transforms.Compose([
+    valdir = os.path.join(cfg.path, 'val')
+    val_dataset = tv.datasets.ImageFolder(
+        valdir,
+        tv.transforms.Compose([
             tv.transforms.Resize(256),
             tv.transforms.CenterCrop(224),
             tv.transforms.ToTensor(),
-            tv_normalize
+            normalizer
         ])
-        # test_set = tv.datasets.ImageFolder(root=os.path.join(cfg.path, 'val'), transform=test_transform)
-        test_set = ImageNetInferenceDataset(root=os.path.join(cfg.path, 'val'), transform=test_transform)
-    elif cfg.dataset == 'cifar10':
-        test_transform = tv.transforms.Compose([
-            tv.transforms.ToTensor(),
-            tv_normalize
-        ])
-        test_set = tv.datasets.CIFAR10(cfg.path, train=False, transform=test_transform, download=True)
+    )
 
-    else:
-        raise ValueError('load_test_data does not support dataset %s' % cfg.dataset)
+    # if cfg.dataset == 'imagenet':
+    #     test_transform = tv.transforms.Compose([
+    #         tv.transforms.Resize(256),
+    #         tv.transforms.CenterCrop(224),
+    #         tv.transforms.ToTensor(),
+    #         tv_normalize
+    #     ])
+    #     # test_set = tv.datasets.ImageFolder(root=os.path.join(cfg.path, 'val'), transform=test_transform)
+    #     test_set = ImageNetInferenceDataset(root=os.path.join(cfg.path, 'val'), transform=test_transform)
+    # elif cfg.dataset == 'cifar10':
+    #     test_transform = tv.transforms.Compose([
+    #         tv.transforms.ToTensor(),
+    #         tv_normalize
+    #     ])
+    #     test_set = tv.datasets.CIFAR10(cfg.path, train=False, transform=test_transform, download=True)
 
-    test_loader = t.utils.data.DataLoader(
-        test_set, batch_size=cfg.batch_size, num_workers=cfg.workers, pin_memory=True)
+    # else:
+    #     raise ValueError('load_test_data does not support dataset %s' % cfg.dataset)
 
-    return test_loader
+    # test_loader = t.utils.data.DataLoader(
+    #     test_set, batch_size=cfg.batch_size, num_workers=cfg.workers, pin_memory=True)
+    val_loader = torch.utils.data.DataLoader(
+        val_dataset,
+        batch_size=cfg.batch_size,
+        shuffle=False,
+        num_workers=cfg.workers,
+        pin_memory=True
+    )
+
+    return val_loader
 
 
 class ImageNetInferenceDataset(Dataset):

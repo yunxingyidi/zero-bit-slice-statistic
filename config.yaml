@@ -33,7 +33,7 @@ dataloader:
   # Path to dataset directory
   path: /home/xxl/zero-bit-slice-statistic/Dataset
   # Size of mini-batch
-  batch_size:
+  batch_size: 32
   # Number of data loading workers
   workers: 32
   # Seeds random generators in a deterministic way (i.e., set all the seeds 0).
@@ -80,9 +80,9 @@ quan:
     # Each output channel uses its own scaling factor
     per_channel: false
     # Whether to use symmetric quantization
-    symmetric: false
+    symmetric: true
     # Quantize all the numbers to non-negative
-    all_positive: true
+    all_positive: false
   weight: # (default for all layers)
     # Quantizer type (choices: lsq)
     mode: lsq
