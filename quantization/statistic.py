@@ -240,25 +240,44 @@ def propagate_and_mask_zeros(bit_fields):
     zero_mask = (out == 0)  # 返回零位的掩码
     return zero_mask
 
+# def propagate_and_zeros(bit_fields):
+#     out = bit_fields.clone()
+#     c = torch.zeros_like(bit_fields[..., 0])
+#     c_i2 = None
+#     out[..., 0] = bit_fields[..., 0]
+#     for i in range(0, 4):
+#         if i < 3 and i > 0:
+#             high = (out[..., i - 1] >> 1) & 0b1
+#             c = c | high
+#             next_value = bit_fields[..., i] + c
+#             out[..., i] = next_value & 0b11
+#             c = (next_value >> 2) & 0b1
+#             if i == 2:
+#                 c_i2 = c | ((out[..., i] >> 1) & 0b1)
+#         else:
+#             out[..., i] = bit_fields[..., i]
+#     out = torch.where(out < 2, out, out - 4)
+#     return out, c_i2
 def propagate_and_zeros(bit_fields):
     out = bit_fields.clone()
     c = torch.zeros_like(bit_fields[..., 0])
     c_i2 = None
-    out[..., 0] = bit_fields[..., 0]
     for i in range(0, 4):
-        if i < 3 and i > 0:
+        if i > 0:
             high = (out[..., i - 1] >> 1) & 0b1
             c = c | high
             next_value = bit_fields[..., i] + c
             out[..., i] = next_value & 0b11
+            if i == 3:
+                c_i2 = (bit_fields[..., i] < 2) & (c == 1)
+                out[..., i][c_i2] = bit_fields[..., i][c_i2]
             c = (next_value >> 2) & 0b1
-            if i == 2:
-                c_i2 = c | ((out[..., i] >> 1) & 0b1)
+            # if i == 2:
+            #     c_i2 = c | ((out[..., i] >> 1) & 0b1)
         else:
             out[..., i] = bit_fields[..., i]
     out = torch.where(out < 2, out, out - 4)
-    return out, c_i2
-
+    return out, c_i2.int()
 
 
 def tensor_statistic_multipy(weight_tensor, act_tensor):
@@ -274,38 +293,99 @@ def tensor_statistic_multipy(weight_tensor, act_tensor):
     zero_mul_mask = count_zero_multiply_tensor(w_zero_mask, a_zero_mask)
     return zero_mul_mask
 
+#
+# def simulate_2bit_matmul(w_fields, a_fields, w, a, w_carry, a_carry):
+#     sample_out = torch.matmul(a.float(), w.float())  # shape: [B, O, L]
+#     # 初始化结果张量，使用sample_out的形状（注意 transpose）
+#     result = torch.zeros_like(sample_out, dtype=torch.int32)  # [B, O, L]
+#     # [B, S, O, K], [B, S, K, L]
+#     shift_pairs = [
+#         (0, 0), (0, 1), (1, 0), (1, 1),
+#         (0, 2), (0, 3), (1, 2), (1, 3),
+#         (2, 0), (2, 1), (3, 0), (3, 1),
+#         (2, 2), (2, 3), (3, 2), (3, 3),
+#     ]
+#
+#     for i, j in shift_pairs:
+#         # w_ij = w_fields[:, i, :, :]  # [B, O, K]
+#         # a_ij = a_fields[:, j, :, :]  # [B, K, L]
+#         w_ij = w_fields[i, ...]  # [B, O, K]
+#         a_ij = a_fields[j, ...]  # [B, K, L]
+#         p_ij = torch.matmul(a_ij.float(), w_ij.float())  # [B, O, L]
+#         result += p_ij.to(torch.int32) << ((i + j) * 2)
+#     # result = result.squeeze(0)  # [1, L]
+#     # expand 以便做矩阵乘法
+#     a_shifted = a.to(torch.int32) << 6  # [B, L, K]
+#     w_shifted = w.to(torch.int32) << 6  # [B, O, K]
+#
+#     extra1 = torch.matmul(a_shifted.float(), w_carry.float()).to(torch.int32)  # [B, O, L]
+#     extra2 = torch.matmul(a_carry.float(), w_shifted.float()).to(torch.int32)  # [B, O, L]
+#
+#     carry_and = (torch.matmul(a_carry.float(), w_carry.float()).to(torch.int32) << 12)  # [B, O, L]
+#     result += extra1 + extra2 - carry_and
+#
+#     return result  # [B, O, L]
 
 def simulate_2bit_matmul(w_fields, a_fields, w, a, w_carry, a_carry):
+    # B, K, O, S = w_fields.shape
+    # B = a_fields.shape[0]
+    # L = a_fields.shape[1]
+    #
+    # result = torch.zeros((B, L, O), dtype=torch.int32, device=w_fields.device)
     sample_out = torch.matmul(a.float(), w.float())  # shape: [B, O, L]
     # 初始化结果张量，使用sample_out的形状（注意 transpose）
     result = torch.zeros_like(sample_out, dtype=torch.int32)  # [B, O, L]
     # [B, S, O, K], [B, S, K, L]
+    # shift_pairs = [
+    #     (1, 1), (1, 0), (0, 1), (0, 0),
+    #     (1, 3), (1, 2), (0, 3), (0, 2),
+    #     (3, 1), (3, 0), (2, 1), (2, 0),
+    #     (3, 3), (3, 2), (2, 3), (2, 2),
+    # ]
     shift_pairs = [
-        (0, 0), (0, 1), (1, 0), (1, 1),
-        (0, 2), (0, 3), (1, 2), (1, 3),
-        (2, 0), (2, 1), (3, 0), (3, 1),
-        (2, 2), (2, 3), (3, 2), (3, 3),
+            (3, 0), (0, 3), (0, 2), (2, 0),
+            (3, 1), (1, 3), (1, 2), (2, 1),
+            (3, 2), (2, 3), (0, 1), (1, 0),
+            (3, 3), (2, 2), (1, 1), (0, 0)
     ]
 
-    for i, j in shift_pairs:
-        # w_ij = w_fields[:, i, :, :]  # [B, O, K]
-        # a_ij = a_fields[:, j, :, :]  # [B, K, L]
-        w_ij = w_fields[i, ...]  # [B, O, K]
-        a_ij = a_fields[j, ...]  # [B, K, L]
-        p_ij = torch.matmul(a_ij.float(), w_ij.float())  # [B, O, L]
-        result += p_ij.to(torch.int32) << ((i + j) * 2)
+    # 每组 4 个
+    for group_idx in range(0, len(shift_pairs), 4):
+        group = shift_pairs[group_idx:group_idx + 4]
+        count_tensor = None  # 当前组的计数器
+        for i, j in group:
+            w_ij = w_fields[i, ...]  # [B, O, K]
+            a_ij = a_fields[j, ...]  # [B, K, L]
+            a_expanded = a_ij.unsqueeze(-1).float()  # [B, K, L, 1]
+            w_expanded = w_ij.unsqueeze(-3).float()  # [B, O, 1, K]
+            mul_tensor = a_expanded * w_expanded  # [B, O, K, L]
+            # print((mul_tensor != 0).int())
+            # 初始化或累加 count_tensor
+            if count_tensor is None:
+                count_tensor = (mul_tensor != 0).int()
+            else:
+                count_tensor += (mul_tensor != 0).int()
+
+            # 抑制掉 count > 2 的位置
+            mul_tensor[count_tensor > 2] = 0
+            p_ij = mul_tensor.transpose(-2, -1).sum(dim=-1)  # [B, O, L]
+            result += p_ij.to(torch.int32) << ((i + j) * 2)
+
+        # ratio = (count_tensor > 2).sum().item() / count_tensor.numel()
+        # print(f"Group {group_idx // 4} - >2 占比: {ratio:.4%}")
     # result = result.squeeze(0)  # [1, L]
     # expand 以便做矩阵乘法
-    a_shifted = a.to(torch.int32) << 6  # [B, L, K]
-    w_shifted = w.to(torch.int32) << 6  # [B, O, K]
+    a_shifted = a.to(torch.int32) << 6              # [B, L, K]
+    w_shifted = w.to(torch.int32) << 6              # [B, O, K]
 
     extra1 = torch.matmul(a_shifted.float(), w_carry.float()).to(torch.int32)  # [B, O, L]
-    extra2 = torch.matmul(a_carry.float(), w_shifted.float()).to(torch.int32)  # [B, O, L]
+    extra2 = torch.matmul(a_carry.float(), w_shifted.float()).to(torch.int32) # [B, O, L]
 
-    carry_and = (torch.matmul(a_carry.float(), w_carry.float()).to(torch.int32) << 12)  # [B, O, L]
+    carry_and = (torch.matmul(a_carry.float(), w_carry.float()).to(torch.int32) << 12) # [B, O, L]
     result += extra1 + extra2 - carry_and
 
     return result  # [B, O, L]
+
 
 # 示例：如何在卷积处理中使用
 def analyze_convolution(input_tensor, weight, stride=(1, 1), padding=(0, 0)):

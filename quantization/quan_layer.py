@@ -24,12 +24,22 @@ class QuanConv2d(t.nn.Conv2d):
     def forward(self, x):
         quantized_weight, weight_scale = self.quan_w_fn(self.weight)
         quantized_act, act_scale = self.quan_a_fn(x)
+
+        # with open("tensor_full.txt", "a") as f:
+        #     f.write(quantized_act.__repr__())  # 使用 __repr__ 避免中间省略
+
+        # num_greater = ((quantized_weight > 64)).sum().item()
+        # total = quantized_weight.numel()
+        # ratio = num_greater / total
+        # print(f"大于20的比例是: {ratio:.2%}")
+
         # output = self._conv_forward(quantized_act, quantized_weight, bias=None)
         output = compute_convolution(quantized_act, quantized_weight, stride=self.stride, padding=self.padding)
         scale = weight_scale.view(1, -1, 1, 1) * act_scale.view(-1, 1, 1, 1)  # shape: [B, C, 1, 1]
         output_fp = output * scale
         if self.bias is not None:
             output_fp += self.bias.view(1, -1, 1, 1)
+        # print("conv_\n")
         return output_fp
         # analyze_convolution(quantized_act, quantized_weight, self.stride, self.padding)
         # return self._conv_forward(quantized_act, quantized_weight, bias=None)

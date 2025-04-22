@@ -28,7 +28,10 @@ def main():
     test_loader = util.load_data(args.dataloader)
 
     # 加载模型
-    model = models.resnet50(pretrained=True)
+    if args.arch == 'resnet50':
+        model = models.resnet50(pretrained=True)
+    elif args.arch == 'vgg16':
+        model = models.vgg16(pretrained=True)
 
     modules_to_replace = quantization.find_modules_to_quantize(model, args.quan)
     model = quantization.replace_module_by_names(model, modules_to_replace)
