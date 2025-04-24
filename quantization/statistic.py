@@ -226,7 +226,7 @@ def split_2bit_fields(tensor, total_bits=8):
     return torch.stack(fields, dim=-1)
 
 
-def propagate_and_mask_zeros(bit_fields):
+def propagate_and_mask_zeros(bit_fields, total_bits=8):
     """模拟进位传播和零位检查"""
     out = bit_fields.clone()
     c = torch.zeros_like(bit_fields[..., 0])  # 进位寄存器
@@ -258,17 +258,18 @@ def propagate_and_mask_zeros(bit_fields):
 #             out[..., i] = bit_fields[..., i]
 #     out = torch.where(out < 2, out, out - 4)
 #     return out, c_i2
-def propagate_and_zeros(bit_fields):
+def propagate_and_zeros(bit_fields, total_bits=8):
     out = bit_fields.clone()
     c = torch.zeros_like(bit_fields[..., 0])
     c_i2 = None
-    for i in range(0, 4):
+    slice_num = total_bits / 2
+    for i in range(0, slice_num):
         if i > 0:
             high = (out[..., i - 1] >> 1) & 0b1
             c = c | high
             next_value = bit_fields[..., i] + c
             out[..., i] = next_value & 0b11
-            if i == 3:
+            if i == (slice_num - 1):
                 c_i2 = (bit_fields[..., i] < 2) & (c == 1)
                 out[..., i][c_i2] = bit_fields[..., i][c_i2]
             c = (next_value >> 2) & 0b1
@@ -327,18 +328,35 @@ def tensor_statistic_multipy(weight_tensor, act_tensor):
 #     return result  # [B, O, L]
 
 def simulate_2bit_matmul(w_fields, a_fields, w, a, w_carry, a_carry):
+    a_slice_num = a_fields.size(0)
+    w_slice_num = w_fields.size(0)
     sample_out = torch.matmul(a.float(), w.float())  # shape: [B, O, L]
     # 初始化结果张量，使用sample_out的形状（注意 transpose）
     result = torch.zeros_like(sample_out, dtype=torch.int32)  # [B, O, L]
-    shift_pairs = [
-            (3, 0), (0, 3), (0, 1), (1, 0),
-            (3, 1), (1, 3), (0, 2), (2, 0),
-            (3, 2), (2, 3), (1, 2), (2, 1),
-            (3, 3), (2, 2), (1, 1), (0, 0)
-    ]
+    shift_pairs = [[
+        (3, 0), (1, 1), (0, 1), (0, 0),
+        (3, 1), (0, 3), (0, 2), (1, 0),
+        (3, 2), (1, 3), (1, 2), (2, 0),
+        (3, 3), (2, 3), (2, 2), (2, 1)
+    ], [
+        (3, 0), (1, 1), (1, 0), (0, 0),
+        (3, 1), (2, 1), (2, 0), (0, 1)
+    ], [
+        (3, 0), (2, 0), (1, 0), (0, 0)
+    ], [
+        (1, 1), (1, 0), (0, 1), (0, 0)
+    ]]
+    if a_slice_num == 4 and w_slice_num == 4:
+        shift_count = 0
+    elif a_slice_num == 4 and w_slice_num == 2:
+        shift_count = 1
+    elif a_slice_num == 4 and w_slice_num == 1:
+        shift_count = 2
+    elif a_slice_num == 2 and w_slice_num == 2:
+        shift_count = 3
 
     # 每组 4 个
-    for group_idx in range(0, len(shift_pairs), 4):
+    for group_idx in range(0, len(shift_pairs[shift_count]), 4):
         group = shift_pairs[group_idx:group_idx + 4]
         count_tensor = None  # 当前组的计数器
         for i, j in group:
@@ -363,13 +381,13 @@ def simulate_2bit_matmul(w_fields, a_fields, w, a, w_carry, a_carry):
         # print(f"Group {group_idx // 4} - >2 占比: {ratio:.4%}")
     # result = result.squeeze(0)  # [1, L]
     # expand 以便做矩阵乘法
-    a_shifted = a.to(torch.int32) << 6              # [B, L, K]
-    w_shifted = w.to(torch.int32) << 6              # [B, O, K]
+    a_shifted = a.to(torch.int32) << ((w_slice_num - 1) * 2)             # [B, L, K]
+    w_shifted = w.to(torch.int32) << ((a_slice_num - 1) * 2)             # [B, O, K]
 
     extra1 = torch.matmul(a_shifted.float(), w_carry.float()).to(torch.int32)  # [B, O, L]
     extra2 = torch.matmul(a_carry.float(), w_shifted.float()).to(torch.int32) # [B, O, L]
 
-    carry_and = (torch.matmul(a_carry.float(), w_carry.float()).to(torch.int32) << 12) # [B, O, L]
+    carry_and = (torch.matmul(a_carry.float(), w_carry.float()).to(torch.int32) << (((w_slice_num - 1) * 2) + ((a_slice_num - 1) * 2))) # [B, O, L]
     result += extra1 + extra2 - carry_and
 
     return result  # [B, O, L]

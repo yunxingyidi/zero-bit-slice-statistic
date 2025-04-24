@@ -28,10 +28,10 @@ class QuanConv2d(t.nn.Conv2d):
         # with open("tensor_full.txt", "a") as f:
         #     f.write(quantized_act.__repr__())  # 使用 __repr__ 避免中间省略
 
-        # num_greater = ((quantized_weight > 64)).sum().item()
-        # total = quantized_weight.numel()
-        # ratio = num_greater / total
-        # print(f"大于20的比例是: {ratio:.2%}")
+        num_greater = ((quantized_act > 4)).sum().item()
+        total = quantized_act.numel()
+        ratio = num_greater / total
+        print(f"大于20的比例是: {ratio:.2%}")
         output = self._conv_forward(quantized_act, quantized_weight, bias=None)
         # if self.groups != 1:
         #     output = compute_dw_convolution(quantized_act, quantized_weight, stride=self.stride, padding=self.padding)

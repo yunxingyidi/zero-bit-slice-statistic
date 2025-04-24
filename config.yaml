@@ -64,7 +64,7 @@ log:
 #     resnet18, resnet34, resnet50, resnet101, resnet152
 #   CIFAR10:
 #     resnet20, resnet32, resnet44, resnet56, resnet110, resnet1202
-arch: inceptionv3
+arch: resnet50
 #arch: vgg16
 # Use pre-trained model
 pre_trained: true
@@ -76,7 +76,7 @@ quan:
     # Quantizer type (choices: lsq)
     mode: lsq
     # Bit width of quantized activation
-    bit: 8
+    bit: 4
     # Each output channel uses its own scaling factor
     per_channel: true
     # Whether to use symmetric quantization
@@ -87,7 +87,7 @@ quan:
     # Quantizer type (choices: lsq)
     mode: lsq
     # Bit width of quantized weight
-    bit: 8
+    bit: 4
     # Each output channel uses its own scaling factor
     per_channel: true
     # Whether to use symmetric quantization
