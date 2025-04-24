@@ -15,7 +15,7 @@ class QuanConv2d(t.nn.Conv2d):
                          padding_mode=m.padding_mode)
         self.quan_w_fn = quan_w_fn
         self.quan_a_fn = quan_a_fn
-
+        self.groups = m.groups
         self.weight = t.nn.Parameter(m.weight.detach())
         self.quan_w_fn.init_from(m.weight)
         if m.bias is not None:
@@ -32,9 +32,11 @@ class QuanConv2d(t.nn.Conv2d):
         # total = quantized_weight.numel()
         # ratio = num_greater / total
         # print(f"大于20的比例是: {ratio:.2%}")
-
-        # output = self._conv_forward(quantized_act, quantized_weight, bias=None)
-        output = compute_convolution(quantized_act, quantized_weight, stride=self.stride, padding=self.padding)
+        output = self._conv_forward(quantized_act, quantized_weight, bias=None)
+        # if self.groups != 1:
+        #     output = compute_dw_convolution(quantized_act, quantized_weight, stride=self.stride, padding=self.padding)
+        # else:
+        #     output = compute_convolution(quantized_act, quantized_weight, stride=self.stride, padding=self.padding)
         scale = weight_scale.view(1, -1, 1, 1) * act_scale.view(-1, 1, 1, 1)  # shape: [B, C, 1, 1]
         output_fp = output * scale
         if self.bias is not None:
@@ -62,8 +64,8 @@ class QuanLinear(t.nn.Linear):
         quantized_weight, weight_scale = self.quan_w_fn(self.weight)
         quantized_act, act_scale = self.quan_a_fn(x)
         # analyse_linear(quantized_act, quantized_weight)
-        # output = t.nn.functional.linear(quantized_act, quantized_weight, self.bias)  # [B, out_features]
-        output = compute_linear(quantized_act, quantized_weight.T, self.bias)
+        output = t.nn.functional.linear(quantized_act, quantized_weight, self.bias)  # [B, out_features]
+        # output = compute_linear(quantized_act, quantized_weight.T, self.bias)
         # print(output)
         scale = act_scale.view(-1, 1) * weight_scale.view(1, -1)
         output_fp = output * scale

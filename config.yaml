@@ -33,7 +33,7 @@ dataloader:
   # Path to dataset directory
   path: /home/xxl/zero-bit-slice-statistic/Dataset
   # Size of mini-batch
-  batch_size: 16
+  batch_size: 4
   # Number of data loading workers
   workers: 32
   # Seeds random generators in a deterministic way (i.e., set all the seeds 0).
@@ -64,8 +64,8 @@ log:
 #     resnet18, resnet34, resnet50, resnet101, resnet152
 #   CIFAR10:
 #     resnet20, resnet32, resnet44, resnet56, resnet110, resnet1202
-arch: vgg16
-
+arch: inceptionv3
+#arch: vgg16
 # Use pre-trained model
 pre_trained: true
 

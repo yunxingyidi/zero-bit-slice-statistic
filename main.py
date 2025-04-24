@@ -32,6 +32,10 @@ def main():
         model = models.resnet50(pretrained=True)
     elif args.arch == 'vgg16':
         model = models.vgg16(pretrained=True)
+    elif args.arch == 'mobilenetv2':
+        model = t.hub.load('pytorch/vision:v0.10.0', 'mobilenet_v2', pretrained=True)
+    elif args.arch == 'inceptionv3':
+        model = model = t.hub.load('pytorch/vision:v0.10.0', 'inception_v3', pretrained=True)
 
     modules_to_replace = quantization.find_modules_to_quantize(model, args.quan)
     model = quantization.replace_module_by_names(model, modules_to_replace)

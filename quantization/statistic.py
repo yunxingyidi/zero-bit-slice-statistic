@@ -327,25 +327,13 @@ def tensor_statistic_multipy(weight_tensor, act_tensor):
 #     return result  # [B, O, L]
 
 def simulate_2bit_matmul(w_fields, a_fields, w, a, w_carry, a_carry):
-    # B, K, O, S = w_fields.shape
-    # B = a_fields.shape[0]
-    # L = a_fields.shape[1]
-    #
-    # result = torch.zeros((B, L, O), dtype=torch.int32, device=w_fields.device)
     sample_out = torch.matmul(a.float(), w.float())  # shape: [B, O, L]
     # 初始化结果张量，使用sample_out的形状（注意 transpose）
     result = torch.zeros_like(sample_out, dtype=torch.int32)  # [B, O, L]
-    # [B, S, O, K], [B, S, K, L]
-    # shift_pairs = [
-    #     (1, 1), (1, 0), (0, 1), (0, 0),
-    #     (1, 3), (1, 2), (0, 3), (0, 2),
-    #     (3, 1), (3, 0), (2, 1), (2, 0),
-    #     (3, 3), (3, 2), (2, 3), (2, 2),
-    # ]
     shift_pairs = [
-            (3, 0), (0, 3), (0, 2), (2, 0),
-            (3, 1), (1, 3), (1, 2), (2, 1),
-            (3, 2), (2, 3), (0, 1), (1, 0),
+            (3, 0), (0, 3), (0, 1), (1, 0),
+            (3, 1), (1, 3), (0, 2), (2, 0),
+            (3, 2), (2, 3), (1, 2), (2, 1),
             (3, 3), (2, 2), (1, 1), (0, 0)
     ]
 
@@ -385,6 +373,51 @@ def simulate_2bit_matmul(w_fields, a_fields, w, a, w_carry, a_carry):
     result += extra1 + extra2 - carry_and
 
     return result  # [B, O, L]
+
+def simulate_2bit_matmul_dw(w_fields, a_fields, w, a, w_carry, a_carry):
+    sample_out = torch.matmul(a.float(), w.float())  # shape: [B, O, L]
+    # 初始化结果张量，使用sample_out的形状（注意 transpose）
+    result = torch.zeros_like(sample_out, dtype=torch.int32)  # [B, O, L]
+
+    shift_pairs = [
+        (3, 0), (0, 3), (0, 1), (1, 0),
+        (3, 1), (1, 3), (0, 2), (2, 0),
+        (3, 2), (2, 3), (1, 2), (2, 1),
+        (3, 3), (2, 2), (1, 1), (0, 0)
+    ]
+
+    for group_idx in range(0, len(shift_pairs), 4):
+        group = shift_pairs[group_idx:group_idx + 4]
+        count_tensor = None
+        for i, j in group:
+            w_ij = w_fields[i]  # [B, C, K]
+            a_ij = a_fields[j]  # [B, C, K, L]
+
+            a_exp = a_ij.unsqueeze(-1).float()  # [B, C, K, L]
+            w_exp = w_ij.unsqueeze(-3).float()  # [B, C, K, 1]
+
+            mul = a_exp * w_exp  # [B, C, K, L]
+
+            if count_tensor is None:
+                count_tensor = (mul != 0).int()
+            else:
+                count_tensor += (mul != 0).int()
+
+            mul[count_tensor > 2] = 0
+            p_ij = mul.sum(dim=3)  # sum over K → [B, C, L]
+            result += p_ij.to(torch.int32) << ((i + j) * 2)
+
+    # >>> carry 补偿
+    a_shifted = a.to(torch.int32) << 6       # [B, C, K, L]
+    w_shifted = w.to(torch.int32) << 6       # [B, C, K]
+
+    extra1 = torch.matmul(a_shifted.float(), w_carry.float()).to(torch.int32)  # [B, O, L]
+    extra2 = torch.matmul(a_carry.float(), w_shifted.float()).to(torch.int32)  # [B, O, L]
+
+    carry_and = (torch.matmul(a_carry.float(), w_carry.float()).to(torch.int32) << 12)  # [B, O, L]
+
+    result += extra1 + extra2 - carry_and
+    return result  # [B, C, L]
 
 
 # 示例：如何在卷积处理中使用
@@ -470,9 +503,11 @@ def compute_convolution(input_tensor, weight, bias=None, stride=(1, 1), padding=
     input_int = input_exp.int() & 0xff
     input_fields = split_2bit_fields(input_int, total_bits=8)  # [N, L, 1, K, 4]
     input_fields, a_carry = propagate_and_zeros(input_fields)  # [...], [N, L, K]
-    output = torch.matmul(input_exp.float(), weight_exp.float())
+    # output = torch.matmul(input_exp.float(), weight_exp.float())
     weight_fields = weight_fields.permute(3, 0, 1, 2)  # [B, 4, O, K]
     input_fields = input_fields.permute(3, 0, 1, 2)  # [B, 4, K, L]
+
+
     # 模拟 bit-slice 的乘法
     sim_result = simulate_2bit_matmul(
         w_fields=weight_fields,  # [1, C_out, K, 4]
@@ -520,5 +555,55 @@ def compute_linear(input_tensor, weight, bias=None):
     )  # [B, C_out]
     if bias is not None:
         output = output + bias.view(1, -1)
+
+    return output
+
+def compute_dw_convolution(input_tensor, weight, bias=None, stride=(1, 1), padding=(0, 0)):
+    N, C_in, H_in, W_in = input_tensor.shape
+    _, _, K_h, K_w = weight.shape
+    stride_h, stride_w = stride
+    pad_h, pad_w = padding
+
+    # 计算输出空间大小
+    H_out = (H_in + 2 * pad_h - K_h) // stride_h + 1
+    W_out = (W_in + 2 * pad_w - K_w) // stride_w + 1
+
+    # unfold 展开为 im2col 格式
+    input_unfold = F.unfold(input_tensor.float(), kernel_size=(K_h, K_w), stride=(stride_h, stride_w),
+                            padding=(pad_h, pad_w))  # [N, C_in * K_h*K_w, L]
+    input_unfold = input_unfold.view(N, C_in, K_h * K_w, -1)  # [N, C_in, K, L]
+    input_unfold = input_unfold.permute(0, 1, 3, 2)  # [N, C_in, L, K]
+
+    # reshape 权重：DW卷积下，每个输入通道有自己的卷积核
+    weight_flat = weight.view(C_in, -1)  # [C_in, K]
+    weight_exp = weight_flat.unsqueeze(0).unsqueeze(-1)  # [1, C_in, K]
+
+    # int8 转换 + bit-slice 拆分
+    weight_int = weight_exp.int() & 0xff  # [1, C_in, K]
+    weight_fields = split_2bit_fields(weight_int, total_bits=8)  # [1, C_in, K, 4]
+    weight_fields, w_carry = propagate_and_zeros(weight_fields)  # [1, C_in, K, 4], [1, C_in, K]
+
+    input_int = input_unfold.int() & 0xff  # [N, C_in, L, K]
+    input_fields = split_2bit_fields(input_int, total_bits=8)  # [N, C_in, L, K, 4]
+    input_fields, a_carry = propagate_and_zeros(input_fields)  # [N, C_in, L, K, 4], [N, C_in, L, K]
+
+    # 调整维度顺序：将 bit-slice 提到最前面，方便逐slice乘法
+    weight_fields = weight_fields.permute(4, 0, 1, 2, 3)        # [4, 1, C_in, K]
+    input_fields = input_fields.permute(4, 0, 1, 2, 3)       # [4, N, C_in, L, K]
+    # 模拟 bit-slice DW 乘法：按通道分别进行（没有跨通道）
+    sim_result = simulate_2bit_matmul_dw(
+        w_fields=weight_fields,  # [B, 1, C_in, K]
+        a_fields=input_fields,   # [B, N, C_in, L, K]
+        w=weight_exp.to(torch.int32),     # [1, C_in, K]
+        a=input_unfold.to(torch.int32),   # [N, C_in, L, K]
+        w_carry=w_carry,  # [1, C_in, K]
+        a_carry=a_carry   # [N, C_in, L, K]
+    )  # [N, C_in, L]
+
+    # reshape 回 feature map 格式
+    output = sim_result.view(N, C_in, H_out, W_out)
+
+    if bias is not None:
+        output += bias.view(1, -1, 1, 1)
 
     return output
